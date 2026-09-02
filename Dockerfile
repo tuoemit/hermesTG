@@ -62,7 +62,8 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist \
     HERMES_TUI_DIR=/opt/hermes/ui-tui \
     HERMES_HOME=/opt/data \
-    HERMES_WRITE_SAFE_ROOT=/opt/data \
+    HERMES_WRITE_SAFE_ROOT=/opt/data:/tmp \
+    HERMES_DASHBOARD_FILES_ROOT=/ \
     HERMES_DISABLE_LAZY_INSTALLS=1 \
     HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages \
     PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -73,7 +74,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # --- Railway-specific ENV --------------------------------------------------
 ENV HERMES_DASHBOARD=1 \
-    HERMES_DASHBOARD_HOST=0.0.0.0 \
+    HERMES_DASHBOARD_HOST=127.0.0.1 \
     PORT=9119
 
 WORKDIR /opt/hermes
