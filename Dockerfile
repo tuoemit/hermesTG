@@ -77,7 +77,6 @@ ENV HERMES_DASHBOARD=1 \
     PORT=9119
 
 WORKDIR /opt/hermes
-VOLUME [ "/opt/data" ]
 EXPOSE 9119
 
 # Bridge Railway's injected $PORT onto the dashboard, then hand off to the
