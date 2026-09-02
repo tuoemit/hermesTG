@@ -74,7 +74,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # --- Railway-specific ENV --------------------------------------------------
 ENV HERMES_DASHBOARD=1 \
-    HERMES_DASHBOARD_HOST=127.0.0.1 \
+    HERMES_DASHBOARD_HOST=0.0.0.0 \
     PORT=9119
 
 WORKDIR /opt/hermes
