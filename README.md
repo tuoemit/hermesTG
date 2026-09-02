@@ -1,4 +1,4 @@
-# Hermes Agent on Railway
+# HermesTG
 
 Deploy [Hermes Agent](https://hermes-agent.nousresearch.com/) to Railway using the official Hermes Agent container architecture.
 
