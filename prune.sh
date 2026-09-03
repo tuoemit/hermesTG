@@ -1,17 +1,22 @@
 #!/bin/sh
-# Prune the official Hermes image down to what a Railway dashboard + gateway
-# deployment actually executes. Runs inside a build stage; the result is
-# flattened by `COPY --from` into a fresh stage (see Dockerfile).
+# Prune the official Hermes image down to the Railway dashboard + gateway
+# runtime. The result is flattened into a fresh stage by Dockerfile.
 #
 #   $1 = KEEP_BROWSER (1 = keep Playwright/Chromium, 0 = remove)
 #
-# Every removal below was verified against the extracted v0.21.0 rootfs:
-# the dashboard serves the prebuilt SPA, `hermes --version` works, and
-# gateway.run / hermes_cli.web_server / tools.web_tools / agent.agent_init /
-# tui_gateway all still import.
+# The image is pinned to a released Hermes version in Dockerfile. Keep the
+# hard-coded pruning rules aligned with that pinned release and update the
+# version intentionally when Hermes is upgraded.
 set -eu
 
-KEEP_BROWSER="${1:-0}"
+KEEP_BROWSER="${1:-1}"
+case "$KEEP_BROWSER" in
+    0|1) ;;
+    *)
+        echo "ERROR: KEEP_BROWSER must be 0 or 1 (got '$KEEP_BROWSER')" >&2
+        exit 2
+        ;;
+esac
 
 before=$(du -sm / 2>/dev/null | cut -f1)
 
@@ -23,27 +28,15 @@ rm_group() {
 }
 
 # --- Build caches ----------------------------------------------------------
-rm_group "uv wheel cache"        /root/.cache/uv                       # 327M
-rm_group "npm/_npx cache"        /root/.npm                            #  18M
-rm_group "node compile cache"    /tmp/node-compile-cache               #   6M
+rm_group "uv wheel cache"        /root/.cache/uv
+rm_group "npm/_npx cache"        /root/.npm
+rm_group "node compile cache"    /tmp/node-compile-cache
 
 # --- Node build-time trees -------------------------------------------------
-# The image PREBUILDS both frontends: hermes_cli/web_dist/ (3.2M, the
-# dashboard SPA) and ui-tui/dist/entry.js (3.6M, the chat TUI). Neither
-# needs node_modules at runtime — entry.js is a self-contained esbuild
-# bundle whose only bare requires are node: builtins (verified). Node
-# itself (142M) and npm STAY: the dashboard's Chat tab spawns
-# `node --expose-gc ui-tui/dist/entry.js` as a PTY child.
-rm_group "root node_modules"     /opt/hermes/node_modules              # 313M
-
-# Removing web/ entirely also disarms _build_web_ui(): it returns early when
-# web/package.json is absent, so a stray unset HERMES_WEB_DIST degrades to
-# "serve the prebuilt dist" instead of "npm ci at boot".
-rm_group "web/ SPA source"       /opt/hermes/web                       #  12M
-
-# ui-tui/package.json MUST survive: it carries `"type": "module"`, and
-# dist/entry.js is ESM (`import { createRequire } ...`). Delete it and
-# node parses the bundle as CJS and dies on the first import statement.
+# Keep the prebuilt dashboard and in-browser chat/TUI bundles. Node itself
+# remains because the dashboard Chat tab can spawn the bundled TUI runtime.
+rm_group "root node_modules"     /opt/hermes/node_modules
+rm_group "web/ SPA source"       /opt/hermes/web
 rm_group "ui-tui TS source" \
     /opt/hermes/ui-tui/src \
     /opt/hermes/ui-tui/packages \
@@ -52,83 +45,109 @@ rm_group "ui-tui TS source" \
     /opt/hermes/ui-tui/tsconfig.json \
     /opt/hermes/ui-tui/tsconfig.build.json \
     /opt/hermes/ui-tui/vitest.config.ts \
-    /opt/hermes/ui-tui/eslint.config.mjs                               #   5M
+    /opt/hermes/ui-tui/eslint.config.mjs
 
-# macOS-only iMessage bridge; cannot run on Linux at all.
+# macOS-only iMessage bridge; cannot run in the Linux Railway image.
 rm_group "photon iMessage sidecar" \
-    /opt/hermes/plugins/platforms/photon/sidecar/node_modules          #  83M
+    /opt/hermes/plugins/platforms/photon/sidecar/node_modules
 
-# --- Build-time toolchain -------------------------------------------------
-# Compiling native Python extensions happens during `uv sync` in the base
-# build, never at runtime (HERMES_DISABLE_LAZY_INSTALLS=1 + a sealed venv).
+# --- Build-time toolchain --------------------------------------------------
+# Native extensions are already built into the upstream venv. These packages
+# are not needed to run Hermes. Avoid architecture-specific filenames except
+# where necessary so the same template works on amd64 and arm64 releases.
 rm_group "C/C++ toolchain" \
     /usr/libexec/gcc /usr/lib/gcc /usr/include/c++ \
-    /usr/bin/x86_64-linux-gnu-lto-dump-14                              # 169M
+    /usr/bin/*-linux-gnu-lto-dump-*
 rm_group "cmake/ctest/cpack" \
-    /usr/bin/cmake /usr/bin/ctest /usr/bin/cpack /usr/share/cmake-3.31 #  48M
-rm_group "static libs" \
-    /usr/lib/python3.13/config-3.13-x86_64-linux-gnu \
-    /usr/lib/x86_64-linux-gnu/libc.a                                   #  30M
-rm_group "docker CLI"            /usr/bin/docker                       #  29M
+    /usr/bin/cmake /usr/bin/ctest /usr/bin/cpack /usr/share/cmake-3.31
 
-# --- OS noise -------------------------------------------------------------
-rm_group "apt lists"             /var/lib/apt/lists                    #  21M
+multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
+if [ -n "$multiarch" ]; then
+    rm_group "static libs" \
+        /usr/lib/python3.13/config-3.13-* \
+        "/usr/lib/${multiarch}/libc.a"
+else
+    rm_group "static libs" /usr/lib/python3.13/config-3.13-*
+fi
+
+rm_group "docker CLI"            /usr/bin/docker
+
+# --- OS noise --------------------------------------------------------------
+rm_group "apt lists"             /var/lib/apt/lists
 rm_group "docs/man/info"         /usr/share/doc /usr/share/man /usr/share/info
-rm_group "locales"               /usr/share/locale                     #  71M
+rm_group "locales"               /usr/share/locale
 rm_group "dev/CI leftovers" \
     /opt/hermes/evals /opt/hermes/tests-js /opt/hermes/contributors \
     /opt/hermes/mcp-research-data /opt/hermes/nix /opt/hermes/flake.nix \
     /opt/hermes/flake.lock /opt/hermes/eslint.config.shared.mjs
 
-# --- Browser automation (opt-in) -----------------------------------------
-# Playwright's Chromium + its font/GL/X11 dependencies. Removing this
-# disables the `browser` tool and Playwright-backed web extraction; the
-# dashboard, chat, gateway, cron and every HTTP-based tool are unaffected.
+# --- Browser automation ---------------------------------------------------
+# Disabled by default in the optimized $5 tier template (Telegram+Dashboard).
+# Set KEEP_BROWSER=1 only if browser automation is required.
 if [ "$KEEP_BROWSER" = "1" ]; then
-    echo "  KEPT: browser automation (+556M)"
+    echo "  KEPT: browser automation (KEEP_BROWSER=1)"
 else
-    rm_group "playwright chromium+ffmpeg" /opt/hermes/.playwright      # 266M
-    rm_group "fonts"                      /usr/share/fonts             #  93M
-    # libgallium is the only consumer of libLLVM/libz3 in the image
-    # (verified with a recursive DT_NEEDED grep), so all three go together.
-    rm_group "mesa/LLVM GPU stack" \
-        /usr/lib/x86_64-linux-gnu/libLLVM.so.19.1 \
-        /usr/lib/x86_64-linux-gnu/libgallium-25.0.7-2+deb13u1.so \
-        /usr/lib/x86_64-linux-gnu/libz3.so.4 \
-        /usr/lib/x86_64-linux-gnu/dri                                  # 191M
+    rm_group "playwright chromium+ffmpeg" /opt/hermes/.playwright
+    rm_group "fonts"                      /usr/share/fonts
+
+    if [ -n "$multiarch" ]; then
+        rm_group "mesa/LLVM GPU stack" \
+            "/usr/lib/${multiarch}/libLLVM.so.19.1" \
+            "/usr/lib/${multiarch}/libgallium-25.0.7-2+deb13u1.so" \
+            "/usr/lib/${multiarch}/libz3.so.4" \
+            "/usr/lib/${multiarch}/dri"
+    fi
     rm_group "Xvfb/X11 utils" \
         /usr/bin/Xvfb /usr/bin/xkbcomp /usr/bin/xkbprint \
-        /usr/bin/xkbevd /usr/share/X11                                 #   7M
+        /usr/bin/xkbevd /usr/share/X11
 fi
 
-# PYTHONDONTWRITEBYTECODE=1 is set in the image, so these are never
-# regenerated; the interpreter just compiles on import each boot.
+# PYTHONDONTWRITEBYTECODE=1 prevents new bytecode files at runtime.
+# Remove safe, non-runtime cache/junk artifacts from Hermes itself. Keep this
+# scoped to known junk names so we do not accidentally delete runtime assets.
+find /opt/hermes -xdev \
+    \( -type d \
+        \( -name __pycache__ -o -name .pytest_cache -o -name .mypy_cache -o -name .ruff_cache \
+           -o -name htmlcov -o -name coverage -o -name .git \) -prune -exec rm -rf {} + \
+       -o -type f \
+        \( -name '*.pyc' -o -name '*.pyo' -o -name '.coverage' -o -name '.DS_Store' \
+           -o -name 'Thumbs.db' -o -name '*.orig' -o -name '*.rej' \) -delete \
+    \) 2>/dev/null || true
+
+# Remove Python bytecode caches anywhere else in the runtime tree as well.
 find / -xdev -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 after=$(du -sm / 2>/dev/null | cut -f1)
 echo "prune: ${before}M -> ${after}M (browser=${KEEP_BROWSER})"
 
-# --- Verify the pruned tree still works ----------------------------------
-# Fail the BUILD, not the deploy, if a removal broke something.
-#
-# HERMES_HOME is redirected to a throwaway dir on purpose. Importing
-# hermes_cli.main bootstraps $HERMES_HOME (SOUL.md, sessions/, logs/,
-# memories/, hooks/, image_cache/ ...), and this stage runs as ROOT — so
-# pointing it at /opt/data would bake root-owned state into the image.
-# stage2-hook.sh only runs its targeted chown when /opt/data's own uid is
-# wrong, which it wouldn't be, so those dirs would stay root-owned and the
-# uid-10000 dashboard would EACCES on any deploy without a mounted volume.
+# --- Verify the pruned tree still works -----------------------------------
+# Use a throwaway HOME so the root build user cannot create root-owned Hermes
+# state in /opt/data. Imports catch missing Python assets; the HTTP smoke test
+# below verifies the actual dashboard can start and answer a health request.
 HERMES_HOME=/tmp/prune-verify-home \
 HERMES_WRITE_SAFE_ROOT=/tmp/prune-verify-home \
+HERMES_DASHBOARD_FILES_ROOT=/opt/data \
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=verify \
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=verify-password \
 /opt/hermes/.venv/bin/python3 - <<'PY'
-import importlib, pathlib, sys
-for m in ("hermes_cli.main", "hermes_cli.web_server", "gateway.run",
-          "tools.web_tools", "agent.agent_init", "tui_gateway"):
-    importlib.import_module(m)
+import importlib
+import pathlib
+import sys
+
+for module in (
+    "hermes_cli.main",
+    "hermes_cli.web_server",
+    "gateway.run",
+    "tools.web_tools",
+    "agent.agent_init",
+    "tui_gateway",
+):
+    importlib.import_module(module)
+
 must = [
-    "/opt/hermes/hermes_cli/web_dist/index.html",   # dashboard SPA
-    "/opt/hermes/ui-tui/dist/entry.js",             # chat TUI bundle
-    "/opt/hermes/ui-tui/package.json",              # ESM type marker
+    "/opt/hermes/hermes_cli/web_dist/index.html",
+    "/opt/hermes/ui-tui/dist/entry.js",
+    "/opt/hermes/ui-tui/package.json",
     "/opt/hermes/docker/entrypoint-dispatch.sh",
     "/opt/hermes/docker/main-wrapper.sh",
     "/etc/s6-overlay/s6-rc.d/dashboard/run",
@@ -138,11 +157,48 @@ if missing:
     sys.exit("prune broke the image, missing: " + ", ".join(missing))
 print("prune verify: imports OK, runtime assets present")
 PY
+
+HERMES_HOME=/tmp/prune-verify-home \
+HERMES_WRITE_SAFE_ROOT=/tmp/prune-verify-home \
+HERMES_DASHBOARD_FILES_ROOT=/opt/data \
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=verify \
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=verify-password \
+/opt/hermes/.venv/bin/hermes dashboard --host 127.0.0.1 --port 19119 --no-open >/tmp/hermes-dashboard-smoke.log 2>&1 &
+dash_pid=$!
+
+cleanup_dashboard() {
+    kill "$dash_pid" 2>/dev/null || true
+    wait "$dash_pid" 2>/dev/null || true
+    rm -f /tmp/hermes-dashboard-smoke.log
+}
+trap cleanup_dashboard EXIT
+
+HERMES_SMOKE_PID="$dash_pid" /opt/hermes/.venv/bin/python3 - <<'PY'
+import os
+import time
+import urllib.request
+
+url = "http://127.0.0.1:19119/api/health"
+for _ in range(40):
+    try:
+        with urllib.request.urlopen(url, timeout=1) as response:
+            if response.status == 200:
+                print("prune verify: dashboard health OK")
+                break
+    except Exception:
+        time.sleep(0.5)
+else:
+    pid = os.environ.get("HERMES_SMOKE_PID", "")
+    raise SystemExit(f"dashboard smoke test failed; pid={pid}")
+PY
+
+cleanup_dashboard
+trap - EXIT
+
 rm -rf /tmp/prune-verify-home
 
-# Guard the guard: assert the verify left no root-owned state on the data
-# volume mountpoint. Anything beyond the three /etc/skel dotfiles the base
-# image ships means something bootstrapped $HERMES_HOME as root.
+# Guard the guard: importing/verifying Hermes must not leave persistent state in
+# the image's data-volume mountpoint.
 stray=$(find /opt/data -mindepth 1 ! -name '.bashrc' ! -name '.profile' \
         ! -name '.bash_logout' -print 2>/dev/null | head -5)
 if [ -n "$stray" ]; then

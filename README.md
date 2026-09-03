@@ -1,50 +1,90 @@
-# HermesTG
+# Hermes-lite
+<b>Hermes agent on railway.</b>
+Optimized for free tire railway limitations.
 
-Deploy [Hermes Agent](https://hermes-agent.nousresearch.com/) to Railway using the official Hermes Agent container architecture.
+Deploy the official [Hermes Agent](https://github.com/NousResearch/hermes-agent) container on Railway.
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/TEMPLATE_ID?referralCode=REFERRAL_CODE)
 
-## Why this template is different
+## What this template provides
 
-This is a thin Railway integration layer around the official Hermes image. It does **not** maintain a second Hermes runtime or install/update Hermes from Git at container startup.
+This repository is a thin Railway deployment layer around the official Hermes Agent container. Hermes remains responsible for the agent runtime, gateway, dashboard, authentication, and process supervision.
 
-The upstream image provides:
+The template adds:
 
-- Python 3.13 and Node 26
-- s6-overlay supervision for gateway and dashboard processes
-- native dashboard authentication
-- non-root runtime and immutable application files
-- persistent state under `/opt/data`
-- browser automation dependencies
-- the fixed SQLite build that avoids the WAL-reset corruption bug
+- a pinned Hermes release for reproducible builds;
+- Railway `PORT` handling;
+- the built-in Hermes dashboard on the Railway public port;
+- persistent Hermes state at `/opt/data`;
+- browser automation is disabled by default;
+- image pruning for build-time files and unused development content;
+- build-time SQLite compatibility and runtime dashboard smoke checks;
+- Railway health checks at `/api/health`.
 
-The template adds only Railway-specific configuration: dynamic port handling, health checks, and deployment documentation.
+The container continues to use Hermes' own s6-overlay supervision and entrypoint dispatcher. No custom gateway supervisor, runtime Git update, or separate dashboard proxy is introduced.
 
-## Setup
+## Deploy
 
-1. Deploy the template.
-2. Set `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` (for example `admin`).
-3. Set a strong `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`.
-4. Attach a Railway Volume at `/opt/data`.
-5. Open the generated Railway domain and complete Hermes setup.
-6. Configure an LLM provider and any messaging integrations you need.
+### 1. Create the Railway service
 
-For published Railway templates, use Railway's `secret(...)` template function to generate the dashboard password rather than committing one to the repository.
+Deploy this repository as a Dockerfile-based Railway service and generate a public domain for the service.
 
-## Environment variables
+### 2. Configure environment variables
 
-| Variable | Purpose |
-|---|---|
-| `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` | Dashboard login username |
-| `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` | Dashboard login password |
-| `HERMES_DASHBOARD` | Enables the supervised dashboard; this template sets it to `1` |
-| `HERMES_DASHBOARD_HOST` | Dashboard bind address; this template sets it to `0.0.0.0` |
-| `HERMES_HOME` | Persistent Hermes state root; this template sets it to `/opt/data` |
-| `PORT` | Railway-provided public HTTP port; the wrapper maps it to Hermes' dashboard port |
+The dashboard is exposed on Railway's public network, so configure Hermes' built-in Basic Auth provider. All other variables are optional and can be set directly in Railway → Variables as needed.
 
-The old `DASHBOARD_PASSWORD`, `DASHBOARD_USER`, and `AUTO_UPDATE` variables are intentionally gone.
+#### Dashboard & Security
 
-## Persistent storage
+| Variable | Required | Description |
+|---|---|---|
+| `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` | Yes | Dashboard login username. |
+| `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` | Yes | Strong dashboard password (set as Railway secret). |
+| `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | Recommended | Stable signing key so login sessions survive container restarts. If omitted, Hermes generates a per-process key and logs you out on restart. |
+| `HERMES_DASHBOARD_PUBLIC_URL` | No | Public URL override for OAuth callbacks (auto-detected from Railway domain if empty). |
+| `HERMES_DASHBOARD_PORTAL_URL` | No | Nous Portal URL override (default production portal). |
+| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | No | OAuth client ID when using Nous/OIDC instead of Basic Auth. |
+
+#### Telegram
+Can be set in Hermes's dashboard after deploy.
+
+| Variable | Required | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | No | Bot token from @BotFather — required only if you use Telegram. |
+| `TELEGRAM_ALLOWED_USERS` | No | Comma-separated Telegram user IDs allowed to talk to the bot. |
+| `TELEGRAM_ALLOW_ALL_USERS` | No | Set `true` to allow any Telegram user (dev only, not recommended). |
+| `TELEGRAM_HOME_CHANNEL` | No | Default chat ID for cron / notification delivery. |
+| `TELEGRAM_HOME_CHANNEL_NAME` | No | Display name for the home channel. |
+
+#### Model Providers (set the one you use)
+Can be set in Hermes's dashboard after deploy.
+
+| Variable | Required | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | No | OpenAI API key. |
+| `OPENAI_BASE_URL` | No | Custom OpenAI-compatible base URL (for local models, vLLM, etc.). |
+| `ANTHROPIC_API_KEY` | No | Anthropic API key. |
+| `OPENROUTER_API_KEY` | No | OpenRouter API key (for vision, web scraping helpers, MoA). |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | No | Google AI Studio API key (aliases). |
+| `XAI_API_KEY` | No | xAI API key (Grok). |
+| `MISTRAL_API_KEY` | No | Mistral API key. |
+| `GROQ_API_KEY` | No | Groq API key. |
+| `DEEPSEEK_API_KEY` | No | DeepSeek API key. |
+| `HERMES_INFERENCE_MODEL` | No | Override default model (e.g. `gpt-4o`, `claude-sonnet-4`). |
+| `HERMES_INFERENCE_PROVIDER` | No | Override provider (e.g. `openai`, `anthropic`, `openrouter`). |
+
+#### Railway & Runtime
+
+| Variable | Required | Description |
+|---|---|---|
+| `PORT` | No | Injected by Railway automatically — do not set manually. Validated and mapped to `HERMES_DASHBOARD_PORT`. |
+| `HERMES_HOME` | No | Persistent data dir (default `/opt/data` — already set, volume mount point). |
+| `HERMES_DASHBOARD` | No | Set `1` to enable dashboard (already set in Dockerfile). |
+| `KEEP_BROWSER` | Optional | Build-time arg only (`0` = minimal ~1.1GB, `1` = with Chromium). Not a runtime variable. |
+
+> Hermes also supports OAuth/OIDC. Current upstream documentation recommends OAuth/OIDC for direct public-internet exposure, while Basic Auth is the simple built-in login mechanism used by this template.
+
+### 3. Add persistent storage (Recommended)
+On a free tire railway if you dont set it you'll get 1GB of storage instead of 0.5GB <b>but your Hermes data will not be persistent</b>. and you need to backup your files manually or use a cron job.
 
 Attach a Railway Volume at:
 
@@ -52,45 +92,143 @@ Attach a Railway Volume at:
 /opt/data
 ```
 
-That is the persistent Hermes state directory. Do not mount the Railway volume at `/root/.hermes`; that is the old template layout.
+`/opt/data` is Hermes' persistent `HERMES_HOME` in the official container. It is the correct location for the Railway Volume and is used by Hermes for configuration, credentials, sessions, memories, skills, logs, cron state, profiles, and other persistent runtime data. The upstream dashboard service also resets `HOME` to `/opt/data` before dropping privileges to the `hermes` user.
+
+### 4. Configure Hermes
+
+Open the Railway public URL, sign in, and finish the Hermes setup. Configure your model provider and messaging integrations from the dashboard or through Railway environment variables as appropriate.
+
+## Browser automation
+
+Browser automation is **disabled by default** in this optimized template for Railway's free tier (saves storage and it won't work correctly with 0.5GB of RAM). This is the cleanest setup.
+
+- Default: `KEEP_BROWSER=0` — no Playwright/Chromium, minimal disk/RAM, fastest cold start.
+- All 20 platforms (including Telegram) and dashboard remain fully functional.
+
+To enable browser automation, build with:
+
+```text
+KEEP_BROWSER=1
+```
+
+Browser workloads need more memory than a messaging-only deployment. Size the Railway service accordingly if you enable it.
+
+## Dashboard and Chat
+
+The built-in Hermes web dashboard runs as a supervised service alongside the gateway. Its Chat tab can launch Hermes' bundled in-browser TUI runtime. This template keeps the required Node runtime and TUI bundle so that dashboard chat remains available.
+
+The dashboard is bound to `0.0.0.0` and receives the same port Railway assigns through `PORT`.
+
+## Ports and health checks
+
+Railway injects a `PORT` environment variable. The template's entrypoint validates that value and makes it authoritative by exporting the same value as `HERMES_DASHBOARD_PORT`.
+
+Railway probes:
+
+```text
+GET /api/health
+```
+
+The health endpoint is a read-only dashboard health endpoint intended for service readiness checks.
+
+## Persistence and security
+
+The dashboard filesystem scope is restricted to:
+
+```text
+/opt/data
+```
+
+The agent's general write safety root is:
+
+```text
+/opt/data:/tmp
+```
+
+This keeps dashboard-managed filesystem access aligned with Hermes' persistent data area rather than exposing the entire container filesystem.
+
+Keep dashboard credentials in Railway's secret environment variables. For Basic Auth, also set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` so sessions remain valid across restarts. Hermes documents that omitting this secret generates a new per-process signing key and logs users out after a restart.
+
+## Hermes versioning
+
+The template pins the upstream image to a released Hermes version:
+
+```dockerfile
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.8.31
+```
+
+This is deliberate. The pruning rules and build-time verification depend on the filesystem and runtime contract of the pinned Hermes release. Upgrade Hermes by changing the pinned release intentionally, then rebuild and test the template before deploying it.
+
+The pinned release is published for both Linux amd64 and arm64.
+
+## Build validation
+
+The Docker build performs several checks before producing the final image:
+
+1. verifies the SQLite version is at least `3.51.3`;
+2. validates retained Hermes Python modules and runtime assets;
+3. starts the dashboard locally and verifies `/api/health` returns HTTP 200;
+4. confirms that the build-time verification did not leave state in `/opt/data`.
+
+These checks are intentionally performed before the pruned image is flattened so a broken pruning change fails the build instead of reaching Railway.
 
 ## Architecture
 
 ```text
-Internet
-   │
-   ▼
 Railway public HTTP
-   │
-   ▼
-Railway port ($PORT)
-   │
-   ▼
+        │
+        ▼
+Railway PORT
+        │
+        ▼
 /railway-entrypoint.sh
-   │
-   ▼
-Official Hermes /init (s6-overlay PID 1)
-   ├── supervised dashboard : $PORT
-   └── supervised gateway
-           │
-           └── persistent Hermes state -> /opt/data
+        │
+        ▼
+Hermes entrypoint-dispatch.sh
+        │
+        ▼
+s6-overlay supervision
+   ┌────┴────────────┐
+   │                 │
+Dashboard          Gateway
+   │                 │
+   └──────┬──────────┘
+          ▼
+     /opt/data
+     HERMES_HOME
 ```
 
-The dashboard authentication and gateway lifecycle are handled by Hermes itself. There is no custom aiohttp auth proxy and no runtime `git pull`.
+The entrypoint dispatcher is kept intact because Hermes uses it to preserve normal s6-overlay PID-1 startup while also supporting runtimes where the image entrypoint is not PID 1.
 
-## SQLite protection
+## Updating the template
 
-The official Hermes image currently avoids Debian's SQLite 3.46.1 and builds a fixed SQLite release. This template also performs a build-time assertion that the runtime SQLite is at least 3.51.3, so an unexpected base-image regression fails the build rather than deploying a vulnerable SQLite stack.
+When upgrading Hermes:
 
-## Updating
+1. change `HERMES_IMAGE` to the new released Hermes tag;
+2. review the upstream Docker/runtime changes;
+3. validate every pruning rule against the new image;
+4. rebuild the image;
+5. run the dashboard and browser-enabled smoke tests;
+6. deploy the updated image to Railway.
 
-Rebuild the Railway service to pick up the current upstream `nousresearch/hermes-agent:latest` image. Data in `/opt/data` is separate from the image and survives image replacement when the Railway Volume remains attached.
+Do not switch back to `latest` unless you are intentionally accepting unreviewed upstream filesystem and runtime changes.
 
-For release pinning, replace `latest` in the Dockerfile with a specific upstream Hermes tag.
+Persistent data under `/opt/data` remains separate from the immutable application image, so replacing the image does not replace the attached Railway Volume.
+
+## Project files
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Pins Hermes, performs the two-stage prune/flatten build, and defines the Railway runtime. |
+| `prune.sh` | Removes build-only content and verifies the pruned Hermes runtime. |
+| `railway-entrypoint.sh` | Validates Railway `PORT`, maps it to Hermes, and delegates to Hermes' dispatcher. |
+| `railway.json` | Defines Railway health-check and restart behavior. |
+| `README.md` | Canonical deployment, configuration, architecture, and maintenance guide. |
 
 ## References
 
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 - [Hermes Agent Docker documentation](https://hermes-agent.nousresearch.com/docs/user-guide/docker/)
-- [Hermes Agent GitHub](https://github.com/NousResearch/hermes-agent)
+- [Hermes dashboard environment variables](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/environment-variables.md)
 - [Railway Dockerfiles](https://docs.railway.com/builds/dockerfiles)
 - [Railway health checks](https://docs.railway.com/deployments/healthchecks)

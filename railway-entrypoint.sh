@@ -1,21 +1,27 @@
 #!/bin/sh
-# Bridge Railway's dynamic $PORT onto the Hermes dashboard, then delegate.
+# Bridge Railway's dynamic PORT to Hermes' dashboard port, then delegate to
+# Hermes' own entrypoint dispatcher.
 set -eu
 
 : "${PORT:=9119}"
-export HERMES_DASHBOARD_PORT="${HERMES_DASHBOARD_PORT:-$PORT}"
 
-# Delegate to the image's own entrypoint dispatcher rather than exec'ing
-# /init directly.
-#
-# The dispatcher checks whether it is actually PID 1. s6-overlay's /init
-# aborts with "can only run as pid 1" under any runtime that wraps the
-# container in its own init; the dispatcher detects that and falls back to
-# `stage2-hook.sh` + `main-wrapper.sh` so the CMD still runs. Hardcoding
-# `exec /init ...` here throws that fallback away and turns a wrapped
-# runtime into a boot loop.
-#
-# Env exported above is still captured: on the PID-1 path /init snapshots
-# the environment into /run/s6/container_environment during stage 1, which
-# is how the supervised dashboard service sees HERMES_DASHBOARD_PORT.
+case "$PORT" in
+    ''|*[!0-9]*)
+        echo "ERROR: PORT must be a numeric TCP port (got '$PORT')" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "ERROR: PORT must be between 1 and 65535 (got '$PORT')" >&2
+    exit 2
+fi
+
+# Railway's PORT is authoritative. Allowing a separate dashboard port causes
+# Railway's health probe and Hermes to disagree about where the service lives.
+export HERMES_DASHBOARD_PORT="$PORT"
+
+# Delegate to the upstream dispatcher rather than /init directly. The
+# dispatcher preserves Hermes' normal s6-overlay PID-1 path and its wrapped-
+# runtime fallback path.
 exec /opt/hermes/docker/entrypoint-dispatch.sh "$@"
